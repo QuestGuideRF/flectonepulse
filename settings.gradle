@@ -1,0 +1,17 @@
+pluginManagement {
+    repositories {
+        gradlePluginPortal()
+        mavenCentral()
+        maven {
+            name = 'Fabric'
+            url = 'https://maven.fabricmc.net/'
+        }
+    }
+}
+
+include "core"
+include "fabric"
+include "bukkit"
+include "paper"
+include "velocity"
+include "bungeecord"

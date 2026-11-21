@@ -1,0 +1,245 @@
+package net.flectone.pulse.service;
+import com.github.retrooper.packetevents.manager.server.ServerVersion;
+import com.google.inject.Inject;
+import com.google.inject.Singleton;
+import lombok.RequiredArgsConstructor;
+import net.flectone.pulse.data.repository.FPlayerRepository;
+import net.flectone.pulse.data.repository.SocialRepository;
+import net.flectone.pulse.execution.scheduler.TaskScheduler;
+import net.flectone.pulse.model.entity.FPlayer;
+import net.flectone.pulse.module.command.ignore.model.Ignore;
+import net.flectone.pulse.module.command.mail.model.Mail;
+import net.flectone.pulse.module.integration.IntegrationModule;
+import net.flectone.pulse.platform.adapter.PlatformPlayerAdapter;
+import net.flectone.pulse.platform.provider.PacketProvider;
+import net.flectone.pulse.util.RandomUtil;
+import net.flectone.pulse.util.constant.SettingText;
+import net.flectone.pulse.util.file.FileFacade;
+import java.net.InetAddress;
+import java.util.List;
+import java.util.UUID;
+@Singleton
+@RequiredArgsConstructor(onConstructor = @__(@Inject))
+public class FPlayerService {
+    private final FileFacade fileFacade;
+    private final PlatformPlayerAdapter platformPlayerAdapter;
+    private final FPlayerRepository fPlayerRepository;
+    private final SocialRepository socialRepository;
+    private final ModerationService moderationService;
+    private final IntegrationModule integrationModule;
+    private final PacketProvider packetProvider;
+    private final TaskScheduler taskScheduler;
+    private final RandomUtil randomUtil;
+    public void clear() {
+        fPlayerRepository.clearCache();
+    }
+    public void reload() {
+        fPlayerRepository.invalid(getConsole().getUuid());
+        addConsole();
+        platformPlayerAdapter.getOnlinePlayers().forEach(uuid -> {
+            fPlayerRepository.invalid(uuid);
+            String name = platformPlayerAdapter.getName(uuid);
+            FPlayer fPlayer = addFPlayer(uuid, name);
+            loadData(fPlayer);
+            saveFPlayerData(fPlayer);
+        });
+    }
+    public void addConsole() {
+        FPlayer console = new FPlayer(true, fileFacade.config().logger().console());
+        fPlayerRepository.add(console);
+        fPlayerRepository.saveOrIgnore(console);
+    }
+    public FPlayer addFPlayer(UUID uuid, String name) {
+        fPlayerRepository.save(uuid, name);
+        moderationService.invalidate(uuid);
+        FPlayer fPlayer = fPlayerRepository.get(uuid);
+        if (fPlayer.isUnknown() || !fPlayer.getUuid().equals(uuid) || !fPlayer.getName().equals(name)) {
+            fPlayerRepository.invalid(uuid);
+            fPlayer = fPlayerRepository.get(uuid);
+        }
+        fPlayer.setIp(platformPlayerAdapter.getIp(fPlayer));
+        fPlayer.setOnline(true);
+        fPlayerRepository.add(fPlayer);
+        return fPlayer;
+    }
+    public void loadData(FPlayer fPlayer) {
+        loadSettings(fPlayer);
+        loadColors(fPlayer);
+        loadIgnores(fPlayer);
+    }
+    public void saveFPlayerData(FPlayer fPlayer) {
+        taskScheduler.runAsync(() -> {
+            if (!platformPlayerAdapter.isOnline(fPlayer)) return;
+            updateFPlayer(fPlayer);
+        });
+    }
+    public int getPing(FPlayer player) {
+        Object platformPlayer = platformPlayerAdapter.convertToPlatformPlayer(player);
+        if (platformPlayer == null) return 0;
+        return packetProvider.getPing(platformPlayer);
+    }
+    public String getSortedName(FPlayer fPlayer) {
+        int weight = integrationModule.getGroupWeight(fPlayer);
+        if (packetProvider.getServerVersion().isNewerThanOrEquals(ServerVersion.V_1_18)) {
+            String paddedRank = String.format("%010d", Integer.MAX_VALUE - weight);
+            String paddedName = String.format("%-16s", fPlayer.getName());
+            return paddedRank + paddedName;
+        }
+        String paddedRank = String.format("%06d", Integer.MAX_VALUE - weight);
+        String truncatedName = fPlayer.getName().substring(0, Math.min(fPlayer.getName().length(), 10));
+        String paddedName = String.format("%-10s", truncatedName);
+        return paddedRank + paddedName;
+    }
+    public void invalidateOffline(UUID uuid) {
+        fPlayerRepository.removeOffline(uuid);
+    }
+    public void invalidateOnline(UUID uuid) {
+        fPlayerRepository.removeOnline(uuid);
+    }
+    public void clearAndSave(FPlayer fPlayer) {
+        fPlayer.setOnline(false);
+        fPlayer.setIp(platformPlayerAdapter.getIp(fPlayer));
+        invalidateOnline(fPlayer.getUuid());
+        updateFPlayer(fPlayer);
+    }
+    public void updateFPlayer(FPlayer fPlayer) {
+        fPlayerRepository.update(fPlayer);
+    }
+    public int getEntityId(FPlayer fPlayer) {
+        return platformPlayerAdapter.getEntityId(fPlayer.getUuid());
+    }
+    public FPlayer getFPlayer(int id) {
+        return fPlayerRepository.get(id);
+    }
+    public FPlayer getConsole() {
+        return fPlayerRepository.get(-1);
+    }
+    public FPlayer getFPlayer(String name) {
+        return fPlayerRepository.get(name);
+    }
+    public FPlayer getFPlayer(InetAddress inetAddress) {
+        return fPlayerRepository.get(inetAddress);
+    }
+    public FPlayer getFPlayer(UUID uuid) {
+        return fPlayerRepository.get(uuid);
+    }
+    public FPlayer getFPlayer(Object player) {
+        String name = platformPlayerAdapter.getName(player);
+        if (name.isEmpty()) return FPlayer.UNKNOWN;
+        UUID uuid = platformPlayerAdapter.getUUID(player);
+        if (uuid == null) {
+            if (platformPlayerAdapter.isConsole(player)) {
+                return getFPlayer(-1);
+            }
+            return new FPlayer(name);
+        }
+        FPlayer fPlayer = getFPlayer(uuid);
+        if (fPlayer.isUnknown()) {
+            return new FPlayer(name, uuid, platformPlayerAdapter.getEntityTranslationKey(player));
+        }
+        return fPlayer;
+    }
+    public FPlayer getRandomFPlayer() {
+        List<FPlayer> fPlayers = getOnlineFPlayers();
+        if (fPlayers.isEmpty()) return FPlayer.UNKNOWN;
+        int randomIndex = randomUtil.nextInt(0, fPlayers.size());
+        return fPlayers.get(randomIndex);
+    }
+    public List<FPlayer> findAllFPlayers() {
+        return fPlayerRepository.getAllPlayersDatabase();
+    }
+    public List<FPlayer> findOnlineFPlayers() {
+        return fPlayerRepository.getOnlinePlayersDatabase();
+    }
+    public List<FPlayer> getOnlineFPlayers() {
+        return fPlayerRepository.getOnlinePlayers();
+    }
+    public List<FPlayer> getVisibleFPlayersFor(FPlayer fViewer) {
+        return getOnlineFPlayers()
+                .stream()
+                .filter(target -> integrationModule.canSeeVanished(target, fViewer))
+                .toList();
+    }
+    public List<FPlayer> getFPlayersWhoCanSee(FPlayer target) {
+        return getOnlineFPlayers()
+                .stream()
+                .filter(viewer -> integrationModule.canSeeVanished(target, viewer))
+                .toList();
+    }
+    public List<FPlayer> getPlatformFPlayers() {
+        return fPlayerRepository.getOnlinePlayers().stream()
+                .filter(platformPlayerAdapter::isOnline)
+                .toList();
+    }
+    public List<FPlayer> getFPlayersWithConsole() {
+        return fPlayerRepository.getOnlineFPlayersWithConsole();
+    }
+    public void loadColors(FPlayer fPlayer) {
+        fPlayerRepository.loadColors(fPlayer);
+    }
+    public void saveColors(FPlayer fPlayer) {
+        fPlayerRepository.saveColors(fPlayer);
+    }
+    public void loadIgnoresIfOffline(FPlayer fPlayer) {
+        if (platformPlayerAdapter.isOnline(fPlayer)) return;
+        loadIgnores(fPlayer);
+    }
+    public void loadIgnores(FPlayer fPlayer) {
+        socialRepository.loadIgnores(fPlayer);
+    }
+    public void loadSettingsIfOffline(FPlayer fPlayer) {
+        if (platformPlayerAdapter.isOnline(fPlayer)) return;
+        loadSettings(fPlayer);
+    }
+    public void loadSettings(FPlayer fPlayer) {
+        fPlayerRepository.loadSettings(fPlayer);
+    }
+    public List<Mail> getReceiverMails(FPlayer fPlayer) {
+        return socialRepository.getReceiverMails(fPlayer);
+    }
+    public List<Mail> getSenderMails(FPlayer fPlayer) {
+        return socialRepository.getSenderMails(fPlayer);
+    }
+    public Ignore saveAndGetIgnore(FPlayer fPlayer, FPlayer fTarget) {
+        return socialRepository.saveAndGetIgnore(fPlayer, fTarget);
+    }
+    public Mail saveAndGetMail(FPlayer fPlayer, FPlayer fTarget, String message) {
+        return socialRepository.saveAndGetMail(fPlayer, fTarget, message);
+    }
+    public void deleteIgnore(Ignore ignore) {
+        socialRepository.deleteIgnore(ignore);
+    }
+    public void deleteMail(Mail mail) {
+        socialRepository.deleteMail(mail);
+    }
+    public void saveSettings(FPlayer fPlayer) {
+        fPlayerRepository.saveSettings(fPlayer);
+    }
+    public void saveOrUpdateSetting(FPlayer fPlayer, String setting) {
+        fPlayerRepository.saveOrUpdateSetting(fPlayer, setting);
+    }
+    public void saveOrUpdateSetting(FPlayer fPlayer, SettingText setting) {
+        fPlayerRepository.saveOrUpdateSetting(fPlayer, setting);
+    }
+    public void updateLocaleLater(UUID uuid, String wrapperLocale) {
+        taskScheduler.runAsyncLater(() -> {
+            FPlayer fPlayer = getFPlayer(uuid);
+            updateLocale(fPlayer, wrapperLocale);
+        }, 40L);
+    }
+    public void updateLocale(FPlayer fPlayer, String newLocale) {
+        String locale = integrationModule.getTritonLocale(fPlayer);
+        if (locale == null) {
+            locale = newLocale;
+        }
+        if (locale.equals(fPlayer.getSetting(SettingText.LOCALE))) return;
+        if (fPlayer.isUnknown()) return;
+        fPlayer.setSetting(SettingText.LOCALE, locale);
+        saveOrUpdateSetting(fPlayer, SettingText.LOCALE);
+    }
+    public boolean hasHigherGroupThan(FPlayer source, FPlayer target) {
+        if (source.isConsole()) return true;
+        return integrationModule.getGroupWeight(source) > integrationModule.getGroupWeight(target)
+                || platformPlayerAdapter.isOperator(source) && !platformPlayerAdapter.isOperator(target);
+    }
+}

@@ -1,0 +1,122 @@
+package net.flectone.pulse.listener;
+import com.github.retrooper.packetevents.manager.server.ServerVersion;
+import com.google.inject.Inject;
+import com.google.inject.Singleton;
+import lombok.RequiredArgsConstructor;
+import net.flectone.pulse.annotation.Pulse;
+import net.flectone.pulse.model.entity.FPlayer;
+import net.flectone.pulse.model.event.Event;
+import net.flectone.pulse.model.event.EventMetadata;
+import net.flectone.pulse.model.event.lifecycle.DisableEvent;
+import net.flectone.pulse.model.event.lifecycle.EnableEvent;
+import net.flectone.pulse.model.event.message.MessagePrepareEvent;
+import net.flectone.pulse.model.event.message.MessageSendEvent;
+import net.flectone.pulse.model.event.module.ModuleEnableEvent;
+import net.flectone.pulse.model.event.player.PlayerJoinEvent;
+import net.flectone.pulse.model.event.player.PlayerPersistAndDisposeEvent;
+import net.flectone.pulse.module.AbstractModule;
+import net.flectone.pulse.module.command.online.OnlineModule;
+import net.flectone.pulse.module.command.sprite.SpriteModule;
+import net.flectone.pulse.module.command.toponline.ToponlineModule;
+import net.flectone.pulse.module.message.bubble.BubbleModule;
+import net.flectone.pulse.module.message.tab.TabModule;
+import net.flectone.pulse.platform.adapter.PlatformPlayerAdapter;
+import net.flectone.pulse.platform.adapter.PlatformServerAdapter;
+import net.flectone.pulse.platform.provider.PacketProvider;
+import net.flectone.pulse.platform.sender.IntegrationSender;
+import net.flectone.pulse.platform.sender.ProxySender;
+import net.flectone.pulse.platform.sender.SoundPlayer;
+import net.flectone.pulse.service.FPlayerService;
+import net.flectone.pulse.util.constant.MessageType;
+import net.flectone.pulse.util.constant.PlatformType;
+import net.flectone.pulse.util.logging.FLogger;
+@Singleton
+@RequiredArgsConstructor(onConstructor = @__(@Inject))
+public class BasePulseListener implements PulseListener {
+    private final FPlayerService fPlayerService;
+    private final PlatformServerAdapter platformServerAdapter;
+    private final PlatformPlayerAdapter platformPlayerAdapter;
+    private final ProxySender proxySender;
+    private final IntegrationSender integrationSender;
+    private final SoundPlayer soundPlayer;
+    private final PacketProvider packetProvider;
+    private final FLogger fLogger;
+    @Pulse(priority = Event.Priority.LOWEST, ignoreCancelled = true)
+    public void onPlayerJoinEvent(PlayerJoinEvent event) {
+        FPlayer fPlayer = event.player();
+        fPlayer.setIp(platformPlayerAdapter.getIp(fPlayer));
+        fPlayerService.saveFPlayerData(fPlayer);
+    }
+    @Pulse
+    public void onPlayerPersistAndDispose(PlayerPersistAndDisposeEvent event) {
+        FPlayer fPlayer = event.player();
+        fPlayerService.clearAndSave(fPlayer);
+    }
+    @Pulse
+    public void onMessageSendEvent(MessageSendEvent event) {
+        EventMetadata<?> eventMetadata = event.eventMetadata();
+        if (eventMetadata.getSound() != null) {
+            soundPlayer.play(eventMetadata.getSound(), eventMetadata.getSender(), event.receiver());
+        }
+    }
+    @Pulse
+    public Event onMessagePrepareEvent(MessagePrepareEvent event) {
+        MessageType messageType = event.messageType();
+        String rawFormat = event.rawFormat();
+        EventMetadata<?> eventMetadata = event.eventMetadata();
+        integrationSender.asyncSend(messageType, rawFormat, eventMetadata);
+        if (proxySender.send(messageType, eventMetadata)) {
+            return event.withCancelled(true);
+        }
+        return event;
+    }
+    @Pulse
+    public Event onModuleEnableEvent(ModuleEnableEvent event) {
+        AbstractModule eventModule = event.module();
+        if (eventModule instanceof BubbleModule
+                && packetProvider.getServerVersion().isOlderThanOrEquals(ServerVersion.V_1_12_2)) {
+            fLogger.warning("Модуль Bubble не поддерживается в этой версии Minecraft.");
+            return event.withCancelled(true);
+        }
+        if (eventModule instanceof TabModule
+                && packetProvider.getServerVersion().isNewerThanOrEquals(ServerVersion.V_1_9)
+                && packetProvider.getServerVersion().isOlderThanOrEquals(ServerVersion.V_1_9_4)) {
+            fLogger.warning("Модуль TAB не поддерживается в этой версии Minecraft.");
+            return event.withCancelled(true);
+        }
+        if (eventModule instanceof OnlineModule
+                && platformServerAdapter.getPlatformType() == PlatformType.FABRIC) {
+            fLogger.warning("Онлайн-модуль не поддерживается в Fabric");
+            return event.withCancelled(true);
+        }
+        if (eventModule instanceof ToponlineModule
+                && platformServerAdapter.getPlatformType() == PlatformType.FABRIC) {
+            fLogger.warning("Модуль Toponline не поддерживается в Fabric");
+            return event.withCancelled(true);
+        }
+        if (eventModule instanceof SpriteModule
+                && packetProvider.getServerVersion().isOlderThan(ServerVersion.V_1_21_9)) {
+            fLogger.warning("Команда модуля Sprite не поддерживается в этой версии Minecraft.");
+            return event.withCancelled(true);
+        }
+        return event;
+    }
+    @Pulse
+    public void onEnableEvent(EnableEvent event) {
+        integrationSender.send(MessageType.SERVER_ENABLE, "", EventMetadata.builder()
+                .sender(FPlayer.UNKNOWN)
+                .format("")
+                .integration()
+                .build()
+        );
+    }
+    @Pulse
+    public void onDisableEvent(DisableEvent event) {
+        integrationSender.send(MessageType.SERVER_DISABLE, "", EventMetadata.builder()
+                .sender(FPlayer.UNKNOWN)
+                .format("")
+                .integration()
+                .build()
+        );
+    }
+}

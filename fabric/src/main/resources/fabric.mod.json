@@ -1,0 +1,32 @@
+{
+	"schemaVersion": 1,
+	"id": "flectonepulse",
+	"version": "${version}",
+	"name": "FlectonePulse",
+	"description": "${description}",
+	"authors": [
+		"TheFaser"
+	],
+	"contact": {
+		"homepage": "https://flectone.net/pulse/",
+		"sources": "https://github.com/Flectone/FlectonePulse/"
+	},
+	"license": "GPL-3.0",
+	"icon": "assets/flectonepulse/icon.png",
+	"environment": "*",
+	"entrypoints": {
+		"main": [
+			"net.flectone.pulse.FabricFlectonePulse"
+		],
+		"voicechat": [
+			"net.flectone.pulse.module.integration.simplevoice.SimpleVoiceIntegration"
+		]
+	},
+	"depends": {
+      "fabricloader": ">=0.9.0",
+      "minecraft": "~1.21.11",
+      "java": ">=21",
+      "fabric-api-base": "*",
+      "packetevents": ">=2.11.1"
+	}
+}

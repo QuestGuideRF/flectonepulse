@@ -1,0 +1,13 @@
+package net.flectone.pulse.module.command.deletemessage.model;
+import lombok.Getter;
+import lombok.experimental.SuperBuilder;
+import net.flectone.pulse.config.setting.LocalizationSetting;
+import net.flectone.pulse.model.event.EventMetadata;
+import org.jspecify.annotations.NonNull;
+import java.util.UUID;
+@Getter
+@SuperBuilder
+public class DeletemessageMetadata<L extends LocalizationSetting> extends EventMetadata<L> {
+    @NonNull
+    private final UUID deletedUUID;
+}

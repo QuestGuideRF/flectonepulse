@@ -1,0 +1,56 @@
+package net.flectone.pulse.module.message.format.moderation.delete.listener;
+import com.google.inject.Inject;
+import com.google.inject.Singleton;
+import lombok.RequiredArgsConstructor;
+import net.flectone.pulse.annotation.Pulse;
+import net.flectone.pulse.listener.PulseListener;
+import net.flectone.pulse.model.entity.FPlayer;
+import net.flectone.pulse.model.event.Event;
+import net.flectone.pulse.model.event.EventMetadata;
+import net.flectone.pulse.model.event.message.MessageFormattingEvent;
+import net.flectone.pulse.model.event.message.MessageReceiveEvent;
+import net.flectone.pulse.model.event.message.MessageSendEvent;
+import net.flectone.pulse.model.event.player.PlayerQuitEvent;
+import net.flectone.pulse.model.util.Destination;
+import net.flectone.pulse.module.message.format.moderation.delete.DeleteModule;
+import net.flectone.pulse.processing.context.MessageContext;
+import net.flectone.pulse.util.constant.MessageFlag;
+import net.kyori.adventure.text.Component;
+import java.util.UUID;
+@Singleton
+@RequiredArgsConstructor(onConstructor = @__(@Inject))
+public class DeletePulseListener implements PulseListener {
+    private final DeleteModule deleteModule;
+    @Pulse
+    public Event onMessageFormattingEvent(MessageFormattingEvent event) {
+        MessageContext messageContext = event.context();
+        if (!messageContext.isFlag(MessageFlag.DELETE)) return event;
+        return event.withContext(deleteModule.addTag(messageContext));
+    }
+    @Pulse(priority = Event.Priority.MONITOR)
+    public void onPlayerQuit(PlayerQuitEvent event) {
+        FPlayer fPlayer = event.player();
+        deleteModule.clearHistory(fPlayer);
+    }
+    @Pulse(priority = Event.Priority.MONITOR)
+    public void onTranslatableMessageReceiveEvent(MessageReceiveEvent event) {
+        if (event.overlay()) return;
+        Component component = event.component();
+        if (deleteModule.isCached(component)) {
+            deleteModule.removeCache(component);
+            return;
+        }
+        FPlayer fReceiver = event.player();
+        UUID messageUUID = UUID.randomUUID();
+        deleteModule.save(fReceiver, messageUUID, component, false);
+    }
+    @Pulse(priority = Event.Priority.MONITOR)
+    public void onSenderToReceiverMessageEvent(MessageSendEvent event) {
+        EventMetadata<?> eventMetadata = event.eventMetadata();
+        if (eventMetadata.getDestination().type() != Destination.Type.CHAT) return;
+        FPlayer fReceiver = event.receiver();
+        UUID messageUUID = eventMetadata.getUuid();
+        Component component = event.message();
+        deleteModule.save(fReceiver, messageUUID, component, true);
+    }
+}

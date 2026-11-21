@@ -1,0 +1,75 @@
+package net.flectone.pulse.listener;
+import com.github.retrooper.packetevents.manager.server.ServerVersion;
+import com.google.inject.Inject;
+import com.google.inject.Singleton;
+import lombok.RequiredArgsConstructor;
+import net.flectone.pulse.execution.dispatcher.EventDispatcher;
+import net.flectone.pulse.execution.scheduler.TaskScheduler;
+import net.flectone.pulse.model.entity.FPlayer;
+import net.flectone.pulse.model.event.player.PlayerLoadEvent;
+import net.flectone.pulse.model.event.player.PlayerPersistAndDisposeEvent;
+import net.flectone.pulse.platform.provider.PacketProvider;
+import net.flectone.pulse.processing.processor.PlayerPreLoginProcessor;
+import net.flectone.pulse.service.FPlayerService;
+import net.flectone.pulse.util.file.FileFacade;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
+import org.bukkit.entity.Player;
+import org.bukkit.event.EventHandler;
+import org.bukkit.event.Listener;
+import org.bukkit.event.player.AsyncPlayerPreLoginEvent;
+import org.bukkit.event.player.PlayerJoinEvent;
+import org.bukkit.event.player.PlayerQuitEvent;
+import java.util.UUID;
+@Singleton
+@RequiredArgsConstructor(onConstructor = @__(@Inject))
+public class BukkitBaseListener implements Listener {
+    private final FileFacade fileFacade;
+    private final FPlayerService fPlayerService;
+    private final EventDispatcher eventDispatcher;
+    private final PacketProvider packetProvider;
+    private final PlayerPreLoginProcessor playerPreLoginProcessor;
+    private final TaskScheduler taskScheduler;
+    @EventHandler
+    public void onAsyncPreLoginEvent(AsyncPlayerPreLoginEvent event) {
+        if (packetProvider.getServerVersion().isOlderThanOrEquals(ServerVersion.V_1_20_1)) {
+            UUID uuid = event.getUniqueId();
+            String name = event.getName();
+            playerPreLoginProcessor.processLogin(uuid, name, loginEvent -> {}, loginEvent -> {
+                event.setLoginResult(AsyncPlayerPreLoginEvent.Result.KICK_OTHER);
+                Component reason = loginEvent.kickReason();
+                event.setKickMessage(LegacyComponentSerializer.legacySection().serialize(reason));
+            });
+        }
+    }
+    @EventHandler
+    public void onPlayerJoinEvent(PlayerJoinEvent event) {
+        taskScheduler.runAsync(() -> {
+            Player player = event.getPlayer();
+            UUID uuid = player.getUniqueId();
+            FPlayer fPlayer = fPlayerService.getFPlayer(uuid);
+            if (packetProvider.getServerVersion().isOlderThan(ServerVersion.V_1_20_2)) {
+                String locale = getPlayerLocale(player);
+                fPlayerService.updateLocale(fPlayer, locale);
+            }
+            eventDispatcher.dispatch(new PlayerLoadEvent(fPlayer));
+            eventDispatcher.dispatch(new net.flectone.pulse.model.event.player.PlayerJoinEvent(fPlayer));
+        });
+    }
+    @EventHandler
+    public void onPlayerQuitEvent(PlayerQuitEvent event) {
+        taskScheduler.runAsync(() -> {
+            UUID uuid = event.getPlayer().getUniqueId();
+            FPlayer fPlayer = fPlayerService.getFPlayer(uuid);
+            eventDispatcher.dispatch(new net.flectone.pulse.model.event.player.PlayerQuitEvent(fPlayer));
+            eventDispatcher.dispatch(new PlayerPersistAndDisposeEvent(fPlayer));
+        });
+    }
+    private String getPlayerLocale(Player player) {
+        try {
+            return player.getLocale();
+        } catch (NoSuchMethodError e) {
+            return fileFacade.config().language().type();
+        }
+    }
+}

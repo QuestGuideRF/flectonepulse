@@ -1,0 +1,168 @@
+package net.flectone.pulse;
+import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.annotation.JsonSetter;
+import com.fasterxml.jackson.annotation.Nulls;
+import com.github.retrooper.packetevents.PacketEvents;
+import com.github.retrooper.packetevents.manager.server.ServerVersion;
+import com.google.common.cache.Cache;
+import com.google.gson.Gson;
+import com.google.inject.AbstractModule;
+import com.google.inject.Provides;
+import com.google.inject.Singleton;
+import com.google.inject.name.Named;
+import com.google.inject.name.Names;
+import lombok.SneakyThrows;
+import net.flectone.pulse.model.entity.FPlayer;
+import net.flectone.pulse.model.util.Moderation;
+import net.flectone.pulse.platform.registry.CacheRegistry;
+import net.flectone.pulse.processing.resolver.LibraryResolver;
+import net.flectone.pulse.processing.resolver.ReflectionResolver;
+import net.flectone.pulse.util.checker.CooldownChecker;
+import net.flectone.pulse.util.constant.CacheName;
+import net.flectone.pulse.util.logging.FLogger;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.minimessage.MiniMessage;
+import net.kyori.adventure.text.minimessage.tag.resolver.TagResolver;
+import net.kyori.adventure.text.object.PlayerHeadObjectContents;
+import net.kyori.adventure.text.serializer.gson.GsonComponentSerializer;
+import org.incendo.cloud.type.tuple.Pair;
+import org.snakeyaml.engine.v2.api.LoadSettings;
+import tools.jackson.core.JsonParser;
+import tools.jackson.core.JsonToken;
+import tools.jackson.databind.*;
+import tools.jackson.databind.cfg.EnumFeature;
+import tools.jackson.databind.module.SimpleModule;
+import tools.jackson.dataformat.yaml.YAMLFactory;
+import tools.jackson.dataformat.yaml.YAMLMapper;
+import tools.jackson.dataformat.yaml.YAMLWriteFeature;
+import java.nio.file.Path;
+import java.util.*;
+import java.util.concurrent.atomic.AtomicInteger;
+public abstract class PlatformInjector extends AbstractModule {
+    private final Path projectPath;
+    private final LibraryResolver libraryResolver;
+    private final FLogger fLogger;
+    public PlatformInjector(Path projectPath, LibraryResolver libraryResolver, FLogger fLogger) {
+        this.projectPath = projectPath;
+        this.libraryResolver = libraryResolver;
+        this.fLogger = fLogger;
+    }
+    @SneakyThrows
+    @Override
+    protected void configure() {
+        bind(FLogger.class).toInstance(fLogger);
+        bind(FlectonePulseAPI.class).asEagerSingleton();
+        bind(LibraryResolver.class).toInstance(libraryResolver);
+        bind(Gson.class).toInstance(GsonComponentSerializer.gson().serializer());
+        bind(MiniMessage.class).toInstance(MiniMessage.builder().tags(TagResolver.builder().build()).build());
+        ReflectionResolver reflectionResolver = new ReflectionResolver(libraryResolver);
+        bind(ReflectionResolver.class).toInstance(reflectionResolver);
+        setupPaths();
+        setupBooleans();
+        bind(ObjectMapper.class).toInstance(createMapper());
+        setupPlatform(reflectionResolver);
+    }
+    public abstract void setupPlatform(ReflectionResolver reflectionResolver);
+    private void setupPaths() {
+        bind(Path.class).annotatedWith(Names.named("projectPath")).toInstance(projectPath);
+        bind(Path.class).annotatedWith(Names.named("imagePath")).toInstance(projectPath.resolve("images"));
+        bind(Path.class).annotatedWith(Names.named("backupPath")).toInstance(projectPath.resolve("backups"));
+        bind(Path.class).annotatedWith(Names.named("minecraftPath")).toInstance(projectPath.resolve("minecraft"));
+    }
+    private void setupBooleans() {
+        ServerVersion serverVersion = PacketEvents.getAPI().getServerManager().getVersion();
+        bind(Boolean.class).annotatedWith(Names.named("isNewerThanOrEqualsV_1_14")).toInstance(serverVersion.isNewerThanOrEquals(ServerVersion.V_1_14));
+        bind(Boolean.class).annotatedWith(Names.named("isNewerThanOrEqualsV_1_16")).toInstance(serverVersion.isNewerThanOrEquals(ServerVersion.V_1_16));
+        bind(Boolean.class).annotatedWith(Names.named("isNewerThanOrEqualsV_1_19_4")).toInstance(serverVersion.isNewerThanOrEquals(ServerVersion.V_1_19_4));
+        bind(Boolean.class).annotatedWith(Names.named("isNewerThanOrEqualsV_1_21_6")).toInstance(serverVersion.isNewerThanOrEquals(ServerVersion.V_1_21_6));
+        bind(Boolean.class).annotatedWith(Names.named("isNewerThanOrEqualsV_1_21_9")).toInstance(serverVersion.isNewerThanOrEquals(ServerVersion.V_1_21_9));
+    }
+    @Provides @Singleton @Named("cooldown")
+    public Cache<CooldownChecker.CooldownKey, Long> provideCooldownCache(CacheRegistry cacheRegistry) {
+        return cacheRegistry.getCache(CacheName.COOLDOWN);
+    }
+    @Provides @Singleton @Named("offlinePlayers")
+    public Cache<UUID, FPlayer> provideOfflinePlayersCache(CacheRegistry cacheRegistry) {
+        return cacheRegistry.getCache(CacheName.OFFLINE_PLAYERS);
+    }
+    @Provides @Singleton @Named("profileProperty")
+    public Cache<UUID, PlayerHeadObjectContents.ProfileProperty> provideProfilePropertyCache(CacheRegistry cacheRegistry) {
+        return cacheRegistry.getCache(CacheName.PROFILE_PROPERTY);
+    }
+    @Provides @Singleton @Named("dialogClick")
+    public Cache<UUID, AtomicInteger> provideDialogClickCache(CacheRegistry cacheRegistry) {
+        return cacheRegistry.getCache(CacheName.DIALOG_CLICK);
+    }
+    @Provides @Singleton @Named("moderation")
+    public Cache<Pair<UUID, Moderation.Type>, List<Moderation>> provideModerationCache(CacheRegistry cacheRegistry) {
+        return cacheRegistry.getCache(CacheName.MODERATION);
+    }
+    @Provides @Singleton @Named("legacyColorMessage")
+    public Cache<String, String> provideLegacyColorMessageCache(CacheRegistry cacheRegistry) {
+        return cacheRegistry.getCache(CacheName.LEGACY_COLOR_MESSAGE);
+    }
+    @Provides @Singleton @Named("mentionMessage")
+    public Cache<String, String> provideMentionMessageCache(CacheRegistry cacheRegistry) {
+        return cacheRegistry.getCache(CacheName.MENTION_MESSAGE);
+    }
+    @Provides @Singleton @Named("swearMessage")
+    public Cache<String, String> provideSwearMessageCache(CacheRegistry cacheRegistry) {
+        return cacheRegistry.getCache(CacheName.SWEAR_MESSAGE);
+    }
+    @Provides @Singleton @Named("replacementMessage")
+    public Cache<String, String> provideReplacementMessageCache(CacheRegistry cacheRegistry) {
+        return cacheRegistry.getCache(CacheName.REPLACEMENT_MESSAGE);
+    }
+    @Provides @Singleton @Named("replacementImage")
+    public Cache<String, Component> provideReplacementImageCache(CacheRegistry cacheRegistry) {
+        return cacheRegistry.getCache(CacheName.REPLACEMENT_IMAGE);
+    }
+    @Provides @Singleton @Named("translateMessage")
+    public Cache<String, UUID> provideTranslateMessageCache(CacheRegistry cacheRegistry) {
+        return cacheRegistry.getCache(CacheName.TRANSLATE_MESSAGE);
+    }
+    private ObjectMapper createMapper() {
+        return YAMLMapper.builder(
+                        YAMLFactory.builder()
+                                .loadSettings(LoadSettings.builder()
+                                        .setBufferSize(8192)
+                                        .setAllowDuplicateKeys(true)
+                                        .build()
+                                )
+                                .build()
+                )
+                .disable(MapperFeature.SORT_PROPERTIES_ALPHABETICALLY)
+                .disable(MapperFeature.DETECT_PARAMETER_NAMES)
+                .enable(MapperFeature.ACCEPT_CASE_INSENSITIVE_ENUMS)
+                .enable(MapperFeature.ALLOW_FINAL_FIELDS_AS_MUTATORS)
+                .disable(DeserializationFeature.FAIL_ON_NULL_FOR_PRIMITIVES)
+                .disable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
+                .enable(DeserializationFeature.ACCEPT_SINGLE_VALUE_AS_ARRAY)
+                .enable(DeserializationFeature.ACCEPT_EMPTY_STRING_AS_NULL_OBJECT)
+                .enable(SerializationFeature.INDENT_OUTPUT)
+                .disable(YAMLWriteFeature.SPLIT_LINES)
+                .disable(YAMLWriteFeature.WRITE_DOC_START_MARKER)
+                .disable(YAMLWriteFeature.USE_NATIVE_TYPE_ID)
+                .propertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE)
+                .disable(EnumFeature.READ_ENUMS_USING_TO_STRING)
+                .disable(EnumFeature.WRITE_ENUMS_USING_TO_STRING)
+                .changeDefaultPropertyInclusion(config -> JsonInclude.Value.construct(JsonInclude.Include.NON_NULL, JsonInclude.Include.NON_NULL))
+                .changeDefaultNullHandling(config -> JsonSetter.Value.forValueNulls(Nulls.SKIP))
+                .withConfigOverride(String.class, o -> o.setNullHandling(JsonSetter.Value.forContentNulls(Nulls.AS_EMPTY)))
+                .withConfigOverride(Collection.class, o -> o.setNullHandling(JsonSetter.Value.forContentNulls(Nulls.AS_EMPTY)))
+                .withConfigOverride(List.class, o -> o.setNullHandling(JsonSetter.Value.forContentNulls(Nulls.AS_EMPTY)))
+                .withConfigOverride(Set.class, o -> o.setNullHandling(JsonSetter.Value.forContentNulls(Nulls.AS_EMPTY)))
+                .withConfigOverride(Map.class, o -> o.setNullHandling(JsonSetter.Value.forContentNulls(Nulls.AS_EMPTY)))
+                .addModule(new SimpleModule().addDeserializer(String.class, new ValueDeserializer<>() {
+                    @Override
+                    public String deserialize(JsonParser p, DeserializationContext ctxt) {
+                        return p.currentToken() == JsonToken.VALUE_NULL ? "" : p.getString();
+                    }
+                    @Override
+                    public String getNullValue(DeserializationContext ctxt) {
+                        return "";
+                    }
+                }))
+                .build();
+    }
+}

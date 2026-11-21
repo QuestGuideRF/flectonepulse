@@ -1,0 +1,151 @@
+package net.flectone.pulse.data.repository;
+import com.google.common.cache.Cache;
+import com.google.inject.Inject;
+import com.google.inject.Singleton;
+import com.google.inject.name.Named;
+import lombok.RequiredArgsConstructor;
+import net.flectone.pulse.data.database.dao.ColorsDAO;
+import net.flectone.pulse.data.database.dao.FPlayerDAO;
+import net.flectone.pulse.data.database.dao.SettingDAO;
+import net.flectone.pulse.model.entity.FPlayer;
+import net.flectone.pulse.util.constant.SettingText;
+import org.jspecify.annotations.NonNull;
+import java.net.InetAddress;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+@Singleton
+@RequiredArgsConstructor(onConstructor = @__(@Inject))
+public class FPlayerRepository {
+    private final Map<UUID, FPlayer> onlinePlayers = new ConcurrentHashMap<>();
+    private final @Named("offlinePlayers") Cache<UUID, FPlayer> offlinePlayersCache;
+    private final FPlayerDAO fPlayerDAO;
+    private final SettingDAO settingDAO;
+    private final ColorsDAO colorsDAO;
+    public void invalid(@NonNull UUID uuid) {
+        onlinePlayers.remove(uuid);
+        offlinePlayersCache.invalidate(uuid);
+    }
+    public FPlayer get(int id) {
+        Optional<FPlayer> onlinePlayer = onlinePlayers.values()
+                .stream()
+                .filter(p -> p.getId() == id)
+                .findFirst();
+        if (onlinePlayer.isPresent()) return onlinePlayer.get();
+        Optional<FPlayer> cachedPlayer = offlinePlayersCache.asMap().values()
+                .stream()
+                .filter(p -> p.getId() == id)
+                .findFirst();
+        if (cachedPlayer.isPresent()) return cachedPlayer.get();
+        FPlayer dbPlayer = fPlayerDAO.getFPlayer(id);
+        saveToCache(dbPlayer);
+        return dbPlayer;
+    }
+    public FPlayer get(@NonNull InetAddress inetAddress) {
+        String ip = inetAddress.getHostAddress();
+        Optional<FPlayer> onlinePlayer = onlinePlayers.values()
+                .stream()
+                .filter(p -> ip.equals(p.getIp()))
+                .findFirst();
+        if (onlinePlayer.isPresent()) return onlinePlayer.get();
+        Optional<FPlayer> cachedPlayer = offlinePlayersCache.asMap().values()
+                .stream()
+                .filter(p -> ip.equals(p.getIp()))
+                .findFirst();
+        if (cachedPlayer.isPresent()) return cachedPlayer.get();
+        FPlayer dbPlayer = fPlayerDAO.getFPlayer(inetAddress);
+        saveToCache(dbPlayer);
+        return dbPlayer;
+    }
+    public FPlayer get(@NonNull UUID uuid) {
+        FPlayer onlinePlayer = onlinePlayers.get(uuid);
+        if (onlinePlayer != null) return onlinePlayer;
+        FPlayer cachedPlayer = offlinePlayersCache.getIfPresent(uuid);
+        if (cachedPlayer != null) return cachedPlayer;
+        FPlayer dbPlayer = fPlayerDAO.getFPlayer(uuid);
+        saveToCache(dbPlayer);
+        return dbPlayer;
+    }
+    public FPlayer get(@NonNull String playerName) {
+        Optional<FPlayer> onlinePlayer = onlinePlayers.values()
+                .stream()
+                .filter(p -> p.getName().equalsIgnoreCase(playerName))
+                .findFirst();
+        if (onlinePlayer.isPresent()) return onlinePlayer.get();
+        Optional<FPlayer> cachedPlayer = offlinePlayersCache.asMap().values()
+                .stream()
+                .filter(p -> p.getName().equalsIgnoreCase(playerName))
+                .findFirst();
+        if (cachedPlayer.isPresent()) return cachedPlayer.get();
+        FPlayer dbPlayer = fPlayerDAO.getFPlayer(playerName);
+        saveToCache(dbPlayer);
+        return dbPlayer;
+    }
+    private void saveToCache(FPlayer fPlayer) {
+        if (fPlayer.isOnline()) {
+            onlinePlayers.put(fPlayer.getUuid(), fPlayer);
+        } else {
+            offlinePlayersCache.put(fPlayer.getUuid(), fPlayer);
+        }
+    }
+    public boolean save(@NonNull UUID uuid, @NonNull String name) {
+        return fPlayerDAO.insert(uuid, name);
+    }
+    public void update(@NonNull FPlayer fPlayer) {
+        fPlayerDAO.update(fPlayer);
+    }
+    public void saveOrIgnore(@NonNull FPlayer fPlayer) {
+        fPlayerDAO.insertOrIgnore(fPlayer);
+    }
+    public void removeOffline(@NonNull UUID uuid) {
+        offlinePlayersCache.invalidate(uuid);
+    }
+    public void removeOnline(@NonNull UUID uuid) {
+        FPlayer fPlayer = onlinePlayers.get(uuid);
+        if (fPlayer != null) {
+            fPlayer.setOnline(false);
+            offlinePlayersCache.put(uuid, fPlayer);
+        }
+        onlinePlayers.remove(uuid);
+    }
+    public void add(@NonNull FPlayer fPlayer) {
+        onlinePlayers.put(fPlayer.getUuid(), fPlayer);
+        offlinePlayersCache.invalidate(fPlayer.getUuid());
+    }
+    public List<FPlayer> getAllPlayersDatabase() {
+        return fPlayerDAO.getFPlayers();
+    }
+    public List<FPlayer> getOnlinePlayersDatabase() {
+        return fPlayerDAO.getOnlineFPlayers();
+    }
+    public List<FPlayer> getOnlinePlayers() {
+        return onlinePlayers.values().stream().filter(FPlayer::isOnline).toList();
+    }
+    public List<FPlayer> getOnlineFPlayersWithConsole() {
+        return onlinePlayers.values().stream().filter(fPlayer -> fPlayer.isOnline() || fPlayer.isConsole()).toList();
+    }
+    public void clearCache() {
+        onlinePlayers.clear();
+        offlinePlayersCache.invalidateAll();
+    }
+    public void loadColors(@NonNull FPlayer fPlayer) {
+        colorsDAO.load(fPlayer);
+    }
+    public void saveColors(@NonNull FPlayer fPlayer) {
+        colorsDAO.save(fPlayer);
+    }
+    public void saveSettings(@NonNull FPlayer fPlayer) {
+        settingDAO.save(fPlayer);
+    }
+    public void loadSettings(@NonNull FPlayer fPlayer) {
+        settingDAO.load(fPlayer);
+    }
+    public void saveOrUpdateSetting(@NonNull FPlayer fPlayer, @NonNull String setting) {
+        settingDAO.insertOrUpdate(fPlayer, setting);
+    }
+    public void saveOrUpdateSetting(@NonNull FPlayer fPlayer, @NonNull SettingText setting) {
+        settingDAO.insertOrUpdate(fPlayer, setting);
+    }
+}
